@@ -14,6 +14,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class NotificationEventServiceApplication {
 	public static void main(String[] args) {
+		// Force pure Java Snappy — fixes Alpine error 100%
+		System.setProperty("org.xerial.snappy.use.systemlib", "false");
+		System.setProperty("org.xerial.snappy.tempdir", "/tmp");
 		SpringApplication.run(NotificationEventServiceApplication.class, args);
 	}
 
