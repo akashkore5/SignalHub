@@ -1,160 +1,174 @@
-// src/main/java/com/khetisetu/event/notifications/service/NotificationProcessingService.java
 package com.khetisetu.event.notifications.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.khetisetu.event.notifications.dto.NotificationAnalyticsEvent;
 import com.khetisetu.event.notifications.dto.NotificationEvent;
+import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
 import com.khetisetu.event.notifications.model.Notification;
-import com.khetisetu.event.notifications.model.NotificationTemplate;
-import com.khetisetu.event.notifications.provider.EmailNotificationProvider;
+import com.khetisetu.event.notifications.provider.NotificationProvider;
 import com.khetisetu.event.notifications.repository.NotificationRepository;
-import jakarta.annotation.PostConstruct;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.io.ClassPathResource;
+import org.slf4j.MDC;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.thymeleaf.TemplateEngine;
-import org.thymeleaf.context.Context;
 
-import java.io.IOException;
 import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-
-import static com.khetisetu.event.notifications.constants.Constants.NOTIFICATION_PREFIX;
-
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class NotificationProcessingService {
 
-    private static final long RATE_LIMIT_MS = 60_000L;
-    private static final String DEFAULT_LANGUAGE = "en";
-    private static final List<String> SUPPORTED_LANGUAGES = Arrays.asList("en", "mr", "hn", "kn", "ta", "te");
-
-    private final EmailNotificationProvider emailProvider;
     private final NotificationRepository notificationRepository;
-    private final TemplateEngine templateEngine;
+    private final Map<String, NotificationProvider> providers;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final RedisTemplate<String, String> redisTemplate;
+    private final MeterRegistry meterRegistry;
     private final ObjectMapper objectMapper;
 
-    private final Map<String, NotificationTemplate> templates = new ConcurrentHashMap<>();
-    private final Map<String, Long> lastSentTime = new ConcurrentHashMap<>();
+    private static final String IDEMPOTENCY_KEY = "idempotency:notif:%s";
 
-    @PostConstruct
-    public void loadTemplates() throws IOException {
-        for (String lang : SUPPORTED_LANGUAGES) {
-            ClassPathResource resource = new ClassPathResource("templates/" + lang + "/notification_templates.json");
-            if (resource.exists()) {
-                List<NotificationTemplate> list = objectMapper.readValue(
-                        resource.getInputStream(),
-                        new TypeReference<List<NotificationTemplate>>() {}
-                );
-                list.forEach(t -> templates.put(lang + "_" + t.getName(), t));
-                log.info("Loaded {} templates for language: {}", list.size(), lang);
-            } else {
-                log.warn("No templates found for language: {}", lang);
-            }
-        }
-        log.info("Total templates loaded: {}", templates.size());
-    }
-
+    // === PROCESS DIRECT EVENT ===
     @Async
-    @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000))
-    public void process(NotificationEvent event) {
-        String recipient = event.recipient();
-        String language = event.language() != null && SUPPORTED_LANGUAGES.contains(event.language())
-                ? event.language() : DEFAULT_LANGUAGE;
+    @Retryable(maxAttempts = 4, backoff = @Backoff(delay = 1000, multiplier = 2))
+    public void process(NotificationEvent event) throws Exception {
+        String eventId = UUID.randomUUID().toString();
+        String userId = extractUserId(event);
+        String traceId = eventId;
 
-        if (!canSendNotification(recipient)) {
-            log.warn("Rate limit exceeded for {}", recipient);
+        MDC.put("traceId", traceId);
+        MDC.put("eventId", eventId);
+        MDC.put("userId", userId);
+        MDC.put("type", event.type());
+
+        log.info("Processing direct notification");
+
+        if (isAlreadyProcessed(eventId)) {
+            log.info("Duplicate direct event");
+            MDC.clear();
             return;
         }
 
-        Notification notification = createNotification(
-                event.type(), recipient, event.templateName(), event.params(), language
-        );
+        NotificationRequestEvent req = toRequestEvent(event, eventId, userId);
+        processRequest(req);
+        markAsProcessed(eventId);
+        MDC.clear();
+    }
+
+    // === PROCESS RULE-BASED EVENT ===
+    @Async
+    @Retryable(maxAttempts = 4, backoff = @Backoff(delay = 1000, multiplier = 2))
+    public void process(NotificationRequestEvent event) throws Exception {
+        String traceId = event.triggerId() != null ? event.triggerId() : event.eventId();
+
+        MDC.put("traceId", traceId);
+        MDC.put("eventId", event.eventId());
+        MDC.put("userId", event.userId());
+        MDC.put("type", event.type());
+
+        log.info("Processing rule-based notification");
+
+        if (isAlreadyProcessed(event.eventId())) {
+            log.info("Duplicate rule event");
+            MDC.clear();
+            return;
+        }
+
+        processRequest(event);
+        markAsProcessed(event.eventId());
+        MDC.clear();
+    }
+
+    private void processRequest(NotificationRequestEvent event) throws Exception {
+        if (!canSend(event.recipient(), event.type())) {
+            log.warn("Rate limit exceeded");
+            publishAnalytics(event, "RATE_LIMITED", null);
+            return;
+        }
+
+        Notification notification = createNotification(event);
+        notification = notificationRepository.save(notification);
 
         try {
-            NotificationTemplate template = getTemplate(event.templateName(), language);
+            NotificationProvider provider = providers.get(event.type());
+            if (provider == null) throw new IllegalStateException("No provider: " + event.type());
 
-            if ("EMAIL".equalsIgnoreCase(event.type())) {
-                String subject = renderSubject(template.getSubject(), event.params());
-                String content = renderTemplate(template.getName(), event.params(), language);
-                emailProvider.sendEmail(event.senderConfig(), recipient, subject, content); // config from env later
-                updateStatus(notification, "SENT", null);
-            }
-
-            else if ("PUSH".equalsIgnoreCase(event.type())) {
-                // Push handled separately or via userId lookup if needed
-                log.info("PUSH not implemented in this version (requires user lookup)");
-                updateStatus(notification, "SKIPPED", "Push requires user subscription");
-            }
-
-            else if ("SMS".equalsIgnoreCase(event.type())) {
-                log.info("SMS not implemented");
-                updateStatus(notification, "SKIPPED", "SMS not implemented");
-            }
+            provider.send(event, notification);
+            updateStatus(notification, "SENT", null);
+            publishAnalytics(event, "SENT", null);
+            meterRegistry.counter("notification.sent", "type", event.type()).increment();
 
         } catch (Exception e) {
             updateStatus(notification, "FAILED", e.getMessage());
-            log.error("Failed to send {} notification to {}", event.type(), recipient, e);
+            publishAnalytics(event, "FAILED", e.getMessage());
+            meterRegistry.counter("notification.failed", "type", event.type()).increment();
+            log.error("Send failed", e);
+            throw e;
         }
     }
 
-    private NotificationTemplate getTemplate(String name, String language) {
-        NotificationTemplate template = templates.get(language + "_" + name);
-        if (template == null) {
-            template = templates.get(DEFAULT_LANGUAGE + "_" + name);
-        }
-        if (template == null) {
-            throw new IllegalArgumentException("Template not found: " + name + " for language: " + language);
-        }
-        return template;
+    private NotificationRequestEvent toRequestEvent(NotificationEvent event, String eventId, String userId) {
+        return NotificationRequestEvent.builder()
+                .eventId(eventId)
+                .userId(userId)
+                .recipient(event.recipient())
+                .type(event.type())
+                .templateName(event.templateName())
+                .params(event.params())
+                .language(event.language())
+                .senderConfig(event.senderConfig())
+                .triggerId(null)
+                .metadata(Map.of("source", "direct"))
+                .build();
     }
 
-    private String renderTemplate(String templateName, Map<String, String> params, String language) {
-        NotificationTemplate template = getTemplate(templateName, language);
-        if ("EMAIL".equals(template.getType())) {
-            Context context = new Context(new Locale(language));
-            params.forEach(context::setVariable);
-            return templateEngine.process(language + "/" + templateName, context);
-        } else {
-            String content = template.getContent();
-            for (Map.Entry<String, String> entry : params.entrySet()) {
-                content = content.replace("{{" + entry.getKey() + "}}", entry.getValue());
-            }
-            return content;
-        }
+    private String extractUserId(NotificationEvent event) {
+        return switch (event.type()) {
+            case "PUSH" -> event.recipient();
+            case "EMAIL" -> event.recipient();
+//            case "EMAIL" -> userRepository.findByEmail(event.recipient()).map(User::getId).orElse("unknown");
+            default -> "unknown";
+        };
     }
 
-    private String renderSubject(String subject, Map<String, String> params) {
-        if (subject == null) return "Notification";
-        for (Map.Entry<String, String> e : params.entrySet()) {
-            subject = subject.replace("{{" + e.getKey() + "}}", e.getValue());
-        }
-        return subject;
+    private boolean isAlreadyProcessed(String eventId) {
+        return Boolean.TRUE.equals(redisTemplate.hasKey(String.format(IDEMPOTENCY_KEY, eventId)));
     }
 
-    private Notification createNotification(String type, String recipient, String templateName,
-                                            Map<String, String> params, String language) {
-        NotificationTemplate template = getTemplate(templateName, language);
+    private void markAsProcessed(String eventId) {
+        redisTemplate.opsForValue().set(String.format(IDEMPOTENCY_KEY, eventId), "1", 24, TimeUnit.HOURS);
+    }
+
+    private boolean canSend(String recipient, String type) {
+        String key = "rate:notif:" + recipient + ":" + type;
+        String val = redisTemplate.opsForValue().get(key);
+        long count = val == null ? 0 : Long.parseLong(val);
+        if (count >= 5) return false;
+        redisTemplate.opsForValue().increment(key);
+        redisTemplate.expire(key, 60, TimeUnit.SECONDS);
+        return true;
+    }
+
+    private Notification createNotification(NotificationRequestEvent event) {
         Notification n = new Notification();
-        n.setId(NOTIFICATION_PREFIX + Instant.now().toEpochMilli());
-        n.setType(type);
-        n.setRecipient(recipient);
-        n.setSubject(renderSubject(template.getSubject(), params));
-        n.setContent(renderTemplate(templateName, params, language));
+        n.setEventId(event.eventId());
+        n.setUserId(event.userId());
+        n.setType(event.type());
+        n.setRecipient(event.recipient());
+        n.setTemplateName(event.templateName());
         n.setStatus("PENDING");
-        n.setTemplateName(templateName);
         n.setRetryCount(0);
-        n.setCreatedAt(Instant.now());
-        n.setUpdatedAt(Instant.now());
-        return notificationRepository.save(n);
+        n.setMetadata(event.metadata());
+        return n;
     }
 
     private void updateStatus(Notification n, String status, String error) {
@@ -165,13 +179,15 @@ public class NotificationProcessingService {
         notificationRepository.save(n);
     }
 
-    private boolean canSendNotification(String recipient) {
-        long now = System.currentTimeMillis();
-        Long last = lastSentTime.get(recipient);
-        if (last == null || (now - last) > RATE_LIMIT_MS) {
-            lastSentTime.put(recipient, now);
-            return true;
-        }
-        return false;
+    private void publishAnalytics(NotificationRequestEvent event, String status, String error) {
+        var analytics = NotificationAnalyticsEvent.builder()
+                .eventId(event.eventId())
+                .userId(event.userId())
+                .type(event.type())
+                .status(status)
+                .error(error)
+                .sentAt(Instant.now())
+                .build();
+        kafkaTemplate.send("user-activity-analytics", analytics);
     }
 }
