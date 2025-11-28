@@ -19,9 +19,4 @@ public class NotificationEventServiceApplication {
 		System.setProperty("org.xerial.snappy.tempdir", "/tmp");
 		SpringApplication.run(NotificationEventServiceApplication.class, args);
 	}
-
-	@GetMapping("/health")
-	public String health() {
-		return "OK - Kafka Consumer Running";
-	}
 }
