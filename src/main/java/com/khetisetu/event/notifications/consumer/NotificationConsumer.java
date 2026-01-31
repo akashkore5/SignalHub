@@ -22,12 +22,9 @@ public class NotificationConsumer {
     private final NotificationProcessingService processingService;
     private final Tracer tracer;
 
-    @KafkaListener(
-            topics = "notifications",
-            groupId = "notification-event-group",
-            containerFactory = "directFactory"
-    )
+    @KafkaListener(topics = "notifications", groupId = "notification-event-group", containerFactory = "directFactory")
     public void listenDirect(NotificationEvent event, Acknowledgment ack) throws Exception {
+        log.info("RECEIVED NotificationEvent from Kafka topic 'notifications': {}", event);
         Span span = tracer.spanBuilder("process.direct.notification")
                 .setAttribute("type", event.type())
                 .startSpan();
@@ -45,11 +42,7 @@ public class NotificationConsumer {
         }
     }
 
-    @KafkaListener(
-            topics = "notification-requests",
-            groupId = "delivery-group",
-            containerFactory = "ruleFactory"
-    )
+    @KafkaListener(topics = "notification-requests", groupId = "delivery-group", containerFactory = "ruleFactory")
     public void listenRuleBased(NotificationRequestEvent event, Acknowledgment ack) throws Exception {
         Span span = tracer.spanBuilder("process.rule.notification")
                 .setAttribute("event.id", event.eventId())
