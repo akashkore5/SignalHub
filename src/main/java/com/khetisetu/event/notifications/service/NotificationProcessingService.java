@@ -100,7 +100,8 @@ public class NotificationProcessingService {
 
         try {
             NotificationProvider provider = providers.get(event.type());
-            if (provider == null) throw new IllegalStateException("No provider: " + event.type());
+            if (provider == null)
+                throw new IllegalStateException("No provider: " + event.type());
 
             provider.send(event, notification);
             updateStatus(notification, "SENT", null);
@@ -108,10 +109,14 @@ public class NotificationProcessingService {
             meterRegistry.counter("notification.sent", "type", event.type()).increment();
 
         } catch (Exception e) {
+            log.error("Send failed processing event {}", event.eventId(), e);
             updateStatus(notification, "FAILED", e.getMessage());
-            publishAnalytics(event, "FAILED", e.getMessage());
+            try {
+                publishAnalytics(event, "FAILED", e.getMessage());
+            } catch (Exception analyticsEx) {
+                log.error("Failed to publish failure analytics for event {}", event.eventId(), analyticsEx);
+            }
             meterRegistry.counter("notification.failed", "type", event.type()).increment();
-            log.error("Send failed", e);
             throw e;
         }
     }
@@ -135,7 +140,8 @@ public class NotificationProcessingService {
         return switch (event.type()) {
             case "PUSH" -> event.recipient();
             case "EMAIL" -> event.recipient();
-//            case "EMAIL" -> userRepository.findByEmail(event.recipient()).map(User::getId).orElse("unknown");
+            // case "EMAIL" ->
+            // userRepository.findByEmail(event.recipient()).map(User::getId).orElse("unknown");
             default -> "unknown";
         };
     }
@@ -152,7 +158,8 @@ public class NotificationProcessingService {
         String key = "rate:notif:" + recipient + ":" + type;
         String val = redisTemplate.opsForValue().get(key);
         long count = val == null ? 0 : Long.parseLong(val);
-        if (count >= 5) return false;
+        if (count >= 5)
+            return false;
         redisTemplate.opsForValue().increment(key);
         redisTemplate.expire(key, 60, TimeUnit.SECONDS);
         return true;
@@ -174,7 +181,8 @@ public class NotificationProcessingService {
     private void updateStatus(Notification n, String status, String error) {
         n.setStatus(status);
         n.setErrorMessage(error);
-        if ("FAILED".equals(status)) n.setRetryCount(n.getRetryCount() + 1);
+        if ("FAILED".equals(status))
+            n.setRetryCount(n.getRetryCount() + 1);
         n.setUpdatedAt(Instant.now());
         notificationRepository.save(n);
     }

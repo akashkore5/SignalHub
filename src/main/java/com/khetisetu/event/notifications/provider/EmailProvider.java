@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
 import com.khetisetu.event.notifications.model.EmailSenderConfig;
 import com.khetisetu.event.notifications.model.Notification;
+import com.khetisetu.event.notifications.service.GlobalRateLimiter;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +18,7 @@ import org.thymeleaf.context.Context;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,12 +28,21 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class EmailProvider implements NotificationProvider {
 
-    private final BrevoEmailProvider brevoEmailProvider;
+    private final List<EmailSender> emailSenders;
     private final TemplateEngine templateEngine;
     private final ObjectMapper objectMapper;
+    private final GlobalRateLimiter globalRateLimiter;
 
     @Value("${email.enabled:true}")
     private boolean enabled;
+
+    @Value("${email.daily.limit:300}")
+    private int dailyLimit;
+
+    @Value("${email.provider:BREVO}")
+    private String activeProviderName;
+
+    private EmailSender activeSender;
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter
             .ofPattern("dd MMM yyyy, hh:mm a")
@@ -41,7 +52,22 @@ public class EmailProvider implements NotificationProvider {
 
     @PostConstruct
     public void init() {
-        log.info("EmailProvider initialized for type: EMAIL");
+        // Select active sender
+        this.activeSender = emailSenders.stream()
+                .filter(s -> s.getProviderName().equalsIgnoreCase(activeProviderName))
+                .findFirst()
+                .orElse(null);
+
+        if (this.activeSender == null && !emailSenders.isEmpty()) {
+            this.activeSender = emailSenders.get(0);
+            log.warn("Configured provider '{}' not found. Falling back to '{}'", activeProviderName,
+                    activeSender.getProviderName());
+        } else if (this.activeSender == null) {
+            log.error("No EmailSender implementations found!");
+        } else {
+            log.info("EmailProvider initialized. Active Sender: {}. Daily Limit: {}", activeSender.getProviderName(),
+                    dailyLimit);
+        }
     }
 
     @Override
@@ -56,7 +82,16 @@ public class EmailProvider implements NotificationProvider {
 
     @Override
     public void send(NotificationRequestEvent event, Notification notification) throws Exception {
+        if (activeSender == null) {
+            throw new IllegalStateException("No active EmailSender configured");
+        }
+
         log.info("Sending EMAIL to {} using template {}", event.recipient(), event.templateName());
+
+        if (!globalRateLimiter.tryAcquire("EMAIL", dailyLimit)) {
+            log.warn("Daily email limit exceeded. Dropping email to {}", event.recipient());
+            throw new RuntimeException("Daily email limit exceeded");
+        }
 
         // 1. Validate sender config
         EmailSenderConfig senderConfig = event.senderConfig();
@@ -71,15 +106,18 @@ public class EmailProvider implements NotificationProvider {
                 event.params(),
                 event.language() != null ? event.language() : "en");
 
-        // 3. Send via Brevo
+        // 3. Resolve Subject with Placeholders
+        String subject = getResolvedSubject(event);
+
+        // 4. Send via Provider (Strategy)
         try {
-            brevoEmailProvider.sendTransactionalEmail(
+            activeSender.sendEmail(
                     senderConfig.getSenderEmail(),
                     senderConfig.getSenderName(),
                     event.recipient(),
-                    getSubject(event),
+                    subject,
                     htmlContent);
-            log.info("Email sent successfully to {} via Brevo", event.recipient());
+            log.info("Email sent successfully to {} via {}", event.recipient(), activeSender.getProviderName());
         } catch (Exception e) {
             log.error("Failed to send email to {}: {}", event.recipient(), e.getMessage(), e);
             throw e;
@@ -114,7 +152,25 @@ public class EmailProvider implements NotificationProvider {
         }
     }
 
-    private String getSubject(NotificationRequestEvent event) {
+    private String getResolvedSubject(NotificationRequestEvent event) {
+        // Get raw subject pattern
+        String rawSubject = getRawSubject(event);
+
+        // Replace placeholders {{param}}
+        if (event.params() == null || event.params().isEmpty()) {
+            return rawSubject;
+        }
+
+        String result = rawSubject;
+        for (Map.Entry<String, String> entry : event.params().entrySet()) {
+            if (entry.getValue() != null) {
+                result = result.replace("{{" + entry.getKey() + "}}", entry.getValue());
+            }
+        }
+        return result;
+    }
+
+    private String getRawSubject(NotificationRequestEvent event) {
         // 1. Priority: Params
         if (event.params() != null && event.params().containsKey("subject")) {
             return event.params().get("subject");
