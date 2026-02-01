@@ -2,56 +2,53 @@ package com.khetisetu.event.notifications.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.concurrent.TimeUnit;
+import java.util.Collections;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class GlobalRateLimiter {
 
-    private final RedisTemplate<String, String> redisTemplate;
+    private final StringRedisTemplate redisTemplate;
     private static final DateTimeFormatter DATES = DateTimeFormatter.ISO_DATE;
     private static final String KEY_PREFIX = "global:rate:";
 
-    /**
-     * Try to acquire a permit for the given type.
-     * 
-     * @param type  The resource type (e.g. "EMAIL")
-     * @param limit The daily limit
-     * @return true if acquired, false if limit exceeded
-     */
+    // Lua script for atomic increment and expire
+    private static final String RATE_LIMIT_SCRIPT = "local current = redis.call('incr', KEYS[1]) " +
+            "if current == 1 then " +
+            "   redis.call('expire', KEYS[1], ARGV[1]) " +
+            "end " +
+            "return current";
+
     public boolean tryAcquire(String type, int limit) {
         String key = getKey(type);
         try {
-            Long current = redisTemplate.opsForValue().increment(key);
+            DefaultRedisScript<Long> redisScript = new DefaultRedisScript<>();
+            redisScript.setScriptText(RATE_LIMIT_SCRIPT);
+            redisScript.setResultType(Long.class);
+
+            // Expire in 25 hours (seconds)
+            String expireSeconds = String.valueOf(25 * 3600);
+
+            Long current = redisTemplate.execute(redisScript, Collections.singletonList(key), expireSeconds);
+
             if (current == null)
                 return false;
 
-            if (current == 1) {
-                // Set expiry for 24 hours (plus buffer) on first increment
-                redisTemplate.expire(key, 25, TimeUnit.HOURS);
-            }
-
             if (current > limit) {
-                // Optionally decrement if we don't want to count rejected requests,
-                // but usually rate limits count the attempts or just stop incrementing.
-                // Here we just return false.
-                // To keep the counter accurate to "attempts" vs "allowed", we leave it.
-                // If strictly "allowed", we should decrement, but race/atomic issues valid.
-                // Simple counter is fine.
                 return false;
             }
             return true;
         } catch (Exception e) {
             log.error("Failed to access Redis for rate limiting", e);
-            // Open fallback: allow if redis fails? Or deny?
-            // Safer to allow to avoid denial of service on cache failure,
-            // but risky for costs. Let's allow but log.
+            // Open fallback: allow if redis fails to avoid outage
             return true;
         }
     }
