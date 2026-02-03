@@ -26,6 +26,12 @@ public class FirebaseConfig {
     @Value("${firebase.private-key:}")
     private String privateKey;
 
+    @Value("${firebase.client-id:}")
+    private String clientId;
+
+    @Value("${firebase.private-key-id:}")
+    private String privateKeyId;
+
     @Bean
     public FirebaseApp firebaseApp() {
         if (!FirebaseApp.getApps().isEmpty()) {
@@ -40,7 +46,8 @@ public class FirebaseConfig {
                 logger.info("Loading Firebase credentials from properties (Project ID: {})", projectId);
                 String formattedKey = privateKey.replace("\\n", "\n");
                 credentials = GoogleCredentials.fromStream(new java.io.ByteArrayInputStream(
-                        createGoogleCredentialsJson(projectId, clientEmail, formattedKey).getBytes()));
+                        createGoogleCredentialsJson(projectId, clientEmail, formattedKey, clientId, privateKeyId)
+                                .getBytes()));
             } else {
                 logger.warn("No Firebase private key found in environment variables. Push notifications may fail.");
                 return null;
@@ -58,18 +65,21 @@ public class FirebaseConfig {
         }
     }
 
-    private String createGoogleCredentialsJson(String projectId, String clientEmail, String privateKey) {
+    private String createGoogleCredentialsJson(String projectId, String clientEmail, String privateKey,
+            String clientId, String privateKeyId) {
         return String.format(
                 "{\n" +
                         "  \"type\": \"service_account\",\n" +
                         "  \"project_id\": \"%s\",\n" +
+                        "  \"private_key_id\": \"%s\",\n" +
                         "  \"private_key\": \"%s\",\n" +
+                        "  \"client_id\": \"%s\",\n" +
                         "  \"client_email\": \"%s\",\n" +
                         "  \"auth_uri\": \"https://accounts.google.com/o/oauth2/auth\",\n" +
                         "  \"token_uri\": \"https://oauth2.googleapis.com/token\",\n" +
                         "  \"auth_provider_x509_cert_url\": \"https://www.googleapis.com/oauth2/v1/certs\",\n" +
                         "  \"client_x509_cert_url\": \"https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%%40%s.iam.gserviceaccount.com\"\n"
                         + "}",
-                projectId, privateKey.replace("\n", "\\n"), clientEmail, projectId);
+                projectId, privateKeyId, privateKey.replace("\n", "\\n"), clientId, clientEmail, projectId);
     }
 }
