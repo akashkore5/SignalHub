@@ -29,9 +29,20 @@ public class UserTokenService {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> pushSubscriptionMap = (Map<String, Object>) sub;
 
-                    // Check for 'token' key which were seen in some implementations
+                    // Check for 'token' key (set by newer frontend versions)
                     if (pushSubscriptionMap.containsKey("token")) {
                         return (String) pushSubscriptionMap.get("token");
+                    }
+
+                    // Fallback: extract FCM token from endpoint URL
+                    // Format: https://fcm.googleapis.com/fcm/send/<FCM_TOKEN>
+                    if (pushSubscriptionMap.containsKey("endpoint")) {
+                        String endpoint = (String) pushSubscriptionMap.get("endpoint");
+                        if (endpoint != null && endpoint.contains("fcm.googleapis.com/fcm/send/")) {
+                            String token = endpoint.substring(endpoint.lastIndexOf("/") + 1);
+                            log.info("Extracted FCM token from endpoint URL for user {}", userId);
+                            return token;
+                        }
                     }
 
                     // Fallback to checking keys.fcm (example if nested differently)
