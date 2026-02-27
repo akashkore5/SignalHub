@@ -41,21 +41,31 @@ public class UserTokenService {
             // 1. Read from new pushSubscriptions list
             Object subsList = user.get("pushSubscriptions");
             if (subsList instanceof List) {
+                int idx = 0;
                 for (Object item : (List<?>) subsList) {
                     String token = extractTokenFromSubscription(item);
-                    if (token != null)
+                    if (token != null) {
                         tokens.add(token);
+                        log.info("[FCM DEBUG] User {} pushSubscriptions[{}] token: {}... (len={})",
+                                userId, idx, token.substring(0, Math.min(20, token.length())), token.length());
+                    }
+                    idx++;
                 }
             }
 
             // 2. Fallback: read from legacy single pushSubscription
             Object sub = user.get("pushSubscription");
             String legacyToken = extractTokenFromSubscription(sub);
-            if (legacyToken != null)
+            if (legacyToken != null) {
                 tokens.add(legacyToken);
+                log.info("[FCM DEBUG] User {} legacy pushSubscription token: {}... (len={})",
+                        userId, legacyToken.substring(0, Math.min(20, legacyToken.length())), legacyToken.length());
+            }
 
             if (tokens.isEmpty()) {
-                log.debug("User {} has no FCM tokens", userId);
+                log.warn("[FCM DEBUG] User {} has NO FCM tokens in DB at all", userId);
+            } else {
+                log.info("[FCM DEBUG] User {} total unique tokens to send: {}", userId, tokens.size());
             }
         } catch (Exception e) {
             log.error("Failed to fetch tokens for user {}: {}", userId, e.getMessage());
@@ -98,30 +108,64 @@ public class UserTokenService {
     }
 
     /**
-     * Atomically removes a specific stale token from both pushSubscriptions list
-     * and the legacy pushSubscription field. Single DB call, no read required.
+     * Removes a specific stale token from both pushSubscriptions list
+     * and the legacy pushSubscription field.
+     * Handles all 3 token storage formats:
+     * 1. token field directly
+     * 2. embedded in endpoint URL (fcm.googleapis.com/fcm/send/{token})
+     * 3. keys.fcm field
      */
     public void invalidateToken(String userId, String staleToken) {
         try {
-            // Atomic: pull from array + unset legacy field if it matches
-            Query query = new Query(Criteria.where("_id").is(userId));
-            Update update = new Update()
-                    .pull("pushSubscriptions", new org.bson.Document("token", staleToken));
+            String tokenPrefix = staleToken.substring(0, Math.min(10, staleToken.length()));
+            long totalRemoved = 0;
 
-            // First update: remove from array
-            mongoTemplate.updateFirst(query, update, "users");
+            Query userQuery = new Query(Criteria.where("_id").is(userId));
 
-            // Second atomic update: unset legacy field only if its token matches
-            Query legacyQuery = new Query(
-                    Criteria.where("_id").is(userId)
-                            .and("pushSubscription.token").is(staleToken));
-            Update legacyUpdate = new Update().unset("pushSubscription");
-            mongoTemplate.updateFirst(legacyQuery, legacyUpdate, "users");
+            // Strategy 1: pull from pushSubscriptions[] where token field matches
+            var result1 = mongoTemplate.updateFirst(userQuery,
+                    new Update().pull("pushSubscriptions",
+                            new org.bson.Document("token", staleToken)),
+                    "users");
+            totalRemoved += result1.getModifiedCount();
 
-            log.info("Invalidated stale FCM token for user {} (token: {}...)", userId,
-                    staleToken.substring(0, Math.min(10, staleToken.length())));
+            // Strategy 2: pull from pushSubscriptions[] where endpoint URL contains the
+            // token
+            String endpointSuffix = "fcm.googleapis.com/fcm/send/" + staleToken;
+            var result2 = mongoTemplate.updateFirst(userQuery,
+                    new Update().pull("pushSubscriptions",
+                            new org.bson.Document("endpoint",
+                                    new org.bson.Document("$regex",
+                                            ".*" + java.util.regex.Pattern.quote(staleToken) + "$"))),
+                    "users");
+            totalRemoved += result2.getModifiedCount();
+
+            // Strategy 3: pull from pushSubscriptions[] where keys.fcm matches
+            var result3 = mongoTemplate.updateFirst(userQuery,
+                    new Update().pull("pushSubscriptions",
+                            new org.bson.Document("keys.fcm", staleToken)),
+                    "users");
+            totalRemoved += result3.getModifiedCount();
+
+            // Strategy 4: unset legacy pushSubscription if its token matches (any format)
+            Criteria legacyCriteria = Criteria.where("_id").is(userId).orOperator(
+                    Criteria.where("pushSubscription.token").is(staleToken),
+                    Criteria.where("pushSubscription.endpoint")
+                            .regex(".*" + java.util.regex.Pattern.quote(staleToken) + "$"),
+                    Criteria.where("pushSubscription.keys.fcm").is(staleToken));
+            var result4 = mongoTemplate.updateFirst(new Query(legacyCriteria),
+                    new Update().unset("pushSubscription"), "users");
+            totalRemoved += result4.getModifiedCount();
+
+            if (totalRemoved > 0) {
+                log.info("Successfully removed stale FCM token for user {} (token: {}..., {} document updates)",
+                        userId, tokenPrefix, totalRemoved);
+            } else {
+                log.warn("Failed to remove stale FCM token for user {} (token: {}...) — token not found in any format. "
+                        + "Manual DB cleanup may be needed.", userId, tokenPrefix);
+            }
         } catch (Exception e) {
-            log.error("Failed to invalidate token for user {}: {}", userId, e.getMessage());
+            log.error("Failed to invalidate token for user {}: {}", userId, e.getMessage(), e);
         }
     }
 }
