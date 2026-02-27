@@ -104,6 +104,46 @@ public class PushNotificationProvider implements NotificationProvider {
             multicastBuilder.putData("url", clickUrl);
         }
 
+        // Ensure title and body are in data payload for SW compatibility
+        multicastBuilder.putData("title", title);
+        multicastBuilder.putData("body", body);
+
+        // Webpush Config for Icons, Badges, and Tags
+        WebpushNotification.Builder webpushNotif = WebpushNotification.builder();
+        String icon = event.params().get("icon");
+        if (icon != null && !icon.isBlank()) {
+            webpushNotif.setIcon(icon);
+        } else {
+            webpushNotif.setIcon("/icons/icon-192x192.png");
+        }
+
+        String badge = event.params().get("badge");
+        if (badge != null && !badge.isBlank()) {
+            webpushNotif.setBadge(badge);
+        }
+
+        String tag = event.params().get("tag");
+        if (tag != null && !tag.isBlank()) {
+            webpushNotif.setTag(tag);
+        }
+
+        multicastBuilder.setWebpushConfig(WebpushConfig.builder()
+                .setNotification(webpushNotif.build())
+                .putHeader("Urgency", "high") // High urgency for immediate delivery
+                .setFcmOptions(WebpushFcmOptions.withLink(clickUrl != null ? clickUrl : "/"))
+                .build());
+
+        // Android Config for High Priority and Tags
+        multicastBuilder.setAndroidConfig(AndroidConfig.builder()
+                .setPriority(AndroidConfig.Priority.HIGH) // High priority for background delivery
+                .setNotification(AndroidNotification.builder()
+                        .setColor("#2e7d32")
+                        .setSound("default")
+                        .setDefaultSound(true)
+                        .setTag(tag)
+                        .build())
+                .build());
+
         try {
             BatchResponse batchResponse = FirebaseMessaging.getInstance()
                     .sendEachForMulticast(multicastBuilder.build());
