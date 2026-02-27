@@ -186,21 +186,34 @@ public class NotificationProcessingService {
     }
 
     private boolean isAlreadyProcessed(String eventId) {
-        return Boolean.TRUE.equals(redisTemplate.hasKey(String.format(IDEMPOTENCY_KEY, eventId)));
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(String.format(IDEMPOTENCY_KEY, eventId)));
+        } catch (Exception e) {
+            log.warn("Redis unavailable for idempotency check (eventId={}). Proceeding anyway.", eventId);
+            return false; // Allow processing when Redis is down
+        }
     }
 
     private void markAsProcessed(String eventId) {
-        redisTemplate.opsForValue().set(String.format(IDEMPOTENCY_KEY, eventId), "1", 24, TimeUnit.HOURS);
+        try {
+            redisTemplate.opsForValue().set(String.format(IDEMPOTENCY_KEY, eventId), "1", 24, TimeUnit.HOURS);
+        } catch (Exception e) {
+            log.warn("Redis unavailable for marking processed (eventId={}). Skipping.", eventId);
+        }
     }
 
     private boolean canSend(String recipient, String type) {
-        String key = "rate:notif:" + recipient + ":" + type;
-        String val = redisTemplate.opsForValue().get(key);
-        long count = val == null ? 0 : Long.parseLong(val);
-        if (count >= 5)
-            return false;
-        redisTemplate.opsForValue().increment(key);
-        redisTemplate.expire(key, 60, TimeUnit.SECONDS);
+        try {
+            String key = "rate:notif:" + recipient + ":" + type;
+            String val = redisTemplate.opsForValue().get(key);
+            long count = val == null ? 0 : Long.parseLong(val);
+            if (count >= 5)
+                return false;
+            redisTemplate.opsForValue().increment(key);
+            redisTemplate.expire(key, 60, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Redis unavailable for rate limiting ({}/{}). Allowing send.", recipient, type);
+        }
         return true;
     }
 
