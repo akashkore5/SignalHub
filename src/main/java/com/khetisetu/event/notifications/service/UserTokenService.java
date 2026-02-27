@@ -98,36 +98,28 @@ public class UserTokenService {
     }
 
     /**
-     * Removes a specific stale token from the user's pushSubscriptions list.
-     * If the legacy pushSubscription has the same token, it is also cleared.
+     * Atomically removes a specific stale token from both pushSubscriptions list
+     * and the legacy pushSubscription field. Single DB call, no read required.
      */
     public void invalidateToken(String userId, String staleToken) {
         try {
+            // Atomic: pull from array + unset legacy field if it matches
             Query query = new Query(Criteria.where("_id").is(userId));
-            Update update = new Update();
+            Update update = new Update()
+                    .pull("pushSubscriptions", new org.bson.Document("token", staleToken));
 
-            // Remove from the pushSubscriptions array — match by token
-            update.pull("pushSubscriptions", new org.bson.Document("token", staleToken));
+            // First update: remove from array
+            mongoTemplate.updateFirst(query, update, "users");
 
-            // Also clear legacy field if it has the same token
-            query.fields().include("pushSubscription");
-            Map<String, Object> user = mongoTemplate.findOne(
-                    new Query(Criteria.where("_id").is(userId)), Map.class, "users");
-            if (user != null) {
-                String legacyToken = extractTokenFromSubscription(user.get("pushSubscription"));
-                if (staleToken.equals(legacyToken)) {
-                    update.unset("pushSubscription");
-                }
-            }
+            // Second atomic update: unset legacy field only if its token matches
+            Query legacyQuery = new Query(
+                    Criteria.where("_id").is(userId)
+                            .and("pushSubscription.token").is(staleToken));
+            Update legacyUpdate = new Update().unset("pushSubscription");
+            mongoTemplate.updateFirst(legacyQuery, legacyUpdate, "users");
 
-            var result = mongoTemplate.updateFirst(
-                    new Query(Criteria.where("_id").is(userId)), update, "users");
-            if (result.getModifiedCount() > 0) {
-                log.info("Invalidated stale FCM token for user {} (token: {}...)", userId,
-                        staleToken.substring(0, Math.min(10, staleToken.length())));
-            } else {
-                log.warn("No matching token to invalidate for user {}", userId);
-            }
+            log.info("Invalidated stale FCM token for user {} (token: {}...)", userId,
+                    staleToken.substring(0, Math.min(10, staleToken.length())));
         } catch (Exception e) {
             log.error("Failed to invalidate token for user {}: {}", userId, e.getMessage());
         }

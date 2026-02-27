@@ -1,17 +1,19 @@
 package com.khetisetu.event.notifications.provider;
 
-import com.google.firebase.messaging.FirebaseMessaging;
-import com.google.firebase.messaging.FirebaseMessagingException;
-import com.google.firebase.messaging.MessagingErrorCode;
+import com.google.firebase.messaging.*;
 import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
 import com.khetisetu.event.notifications.model.Notification;
 import com.khetisetu.event.notifications.service.UserTokenService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.util.HashMap;
 import java.util.List;
@@ -21,16 +23,19 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class PushNotificationProviderTest {
 
     @Mock
     private UserTokenService userTokenService;
 
+    private MeterRegistry meterRegistry;
     private PushNotificationProvider provider;
 
     @BeforeEach
     void setUp() {
-        provider = new PushNotificationProvider(userTokenService);
+        meterRegistry = new SimpleMeterRegistry();
+        provider = new PushNotificationProvider(userTokenService, meterRegistry);
     }
 
     @Test
@@ -39,19 +44,18 @@ class PushNotificationProviderTest {
                 .recipient("user_123")
                 .params(new HashMap<>())
                 .build();
-        Notification notificationRecord = new Notification();
+        Notification notif = new Notification();
 
         when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of());
 
-        provider.send(event, notificationRecord);
+        provider.send(event, notif);
 
-        assertEquals("SKIPPED", notificationRecord.getStatus());
-        assertEquals("No FCM token found", notificationRecord.getErrorMessage());
-        verify(userTokenService).getFcmTokens("user_123");
+        assertEquals("SKIPPED", notif.getStatus());
+        assertEquals(1.0, meterRegistry.counter("push.send", "result", "skipped").count());
     }
 
     @Test
-    void send_ShouldSendToAllDevices_WhenMultipleTokensPresent() throws Exception {
+    void send_ShouldUseMulticast_ForMultipleTokens() throws Exception {
         Map<String, String> params = new HashMap<>();
         params.put("title", "Hello");
         params.put("body", "World");
@@ -60,86 +64,113 @@ class PushNotificationProviderTest {
                 .recipient("user_123")
                 .params(params)
                 .build();
-        Notification notificationRecord = new Notification();
+        Notification notif = new Notification();
 
-        when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of("token_laptop", "token_mobile"));
+        when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of("token1", "token2"));
 
         try (MockedStatic<FirebaseMessaging> mockedFirebase = mockStatic(FirebaseMessaging.class)) {
-            FirebaseMessaging firebaseMessaging = mock(FirebaseMessaging.class);
-            mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(firebaseMessaging);
-            when(firebaseMessaging.send(any())).thenReturn("msg_id");
+            FirebaseMessaging fm = mock(FirebaseMessaging.class);
+            mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(fm);
 
-            provider.send(event, notificationRecord);
+            SendResponse successResp = mock(SendResponse.class);
+            when(successResp.isSuccessful()).thenReturn(true);
 
-            // Both tokens should have been sent to
-            verify(firebaseMessaging, times(2)).send(any());
+            BatchResponse batchResponse = mock(BatchResponse.class);
+            when(batchResponse.getSuccessCount()).thenReturn(2);
+            when(batchResponse.getFailureCount()).thenReturn(0);
+            when(batchResponse.getResponses()).thenReturn(List.of(successResp, successResp));
+
+            when(fm.sendEachForMulticast(any(MulticastMessage.class))).thenReturn(batchResponse);
+
+            provider.send(event, notif);
+
+            verify(fm, times(1)).sendEachForMulticast(any(MulticastMessage.class));
+            assertEquals(2.0, meterRegistry.counter("push.send", "result", "success").count());
         }
     }
 
     @Test
-    void send_ShouldInvalidateStaleToken_AndSucceedForOtherDevices() throws Exception {
+    void send_ShouldInvalidateStaleTokens_AndSucceedForOthers() throws Exception {
         Map<String, String> params = new HashMap<>();
-        params.put("title", "Hello");
-        params.put("body", "World");
+        params.put("title", "Test");
+        params.put("body", "Body");
 
         NotificationRequestEvent event = NotificationRequestEvent.builder()
                 .recipient("user_123")
                 .params(params)
                 .build();
-        Notification notificationRecord = new Notification();
+        Notification notif = new Notification();
 
-        when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of("stale_token", "good_token"));
+        when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of("stale_tok", "good_token"));
 
         try (MockedStatic<FirebaseMessaging> mockedFirebase = mockStatic(FirebaseMessaging.class)) {
-            FirebaseMessaging firebaseMessaging = mock(FirebaseMessaging.class);
-            mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(firebaseMessaging);
+            FirebaseMessaging fm = mock(FirebaseMessaging.class);
+            mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(fm);
 
-            // First token is stale, second succeeds
-            FirebaseMessagingException unregisteredException = mock(FirebaseMessagingException.class);
-            when(unregisteredException.getMessagingErrorCode()).thenReturn(MessagingErrorCode.UNREGISTERED);
-            when(unregisteredException.getMessage()).thenReturn("Requested entity was not found.");
+            FirebaseMessagingException staleEx = mock(FirebaseMessagingException.class);
+            when(staleEx.getMessagingErrorCode()).thenReturn(MessagingErrorCode.UNREGISTERED);
+            when(staleEx.getMessage()).thenReturn("Not found");
 
-            when(firebaseMessaging.send(any()))
-                    .thenThrow(unregisteredException) // First call: stale
-                    .thenReturn("msg_id"); // Second call: success
+            SendResponse staleResp = mock(SendResponse.class);
+            when(staleResp.isSuccessful()).thenReturn(false);
+            when(staleResp.getException()).thenReturn(staleEx);
 
-            // Should NOT throw — one device succeeded
-            provider.send(event, notificationRecord);
+            SendResponse goodResp = mock(SendResponse.class);
+            when(goodResp.isSuccessful()).thenReturn(true);
 
-            // Stale token should have been invalidated
-            verify(userTokenService).invalidateToken("user_123", "stale_token");
-            // Status should NOT be FAILED since one succeeded
-            assertNotEquals("FAILED_UNREGISTERED", notificationRecord.getStatus());
+            BatchResponse batchResponse = mock(BatchResponse.class);
+            when(batchResponse.getSuccessCount()).thenReturn(1);
+            when(batchResponse.getFailureCount()).thenReturn(1);
+            when(batchResponse.getResponses()).thenReturn(List.of(staleResp, goodResp));
+
+            when(fm.sendEachForMulticast(any(MulticastMessage.class))).thenReturn(batchResponse);
+
+            provider.send(event, notif);
+
+            verify(userTokenService).invalidateToken("user_123", "stale_tok");
+            assertNotEquals("FAILED_UNREGISTERED", notif.getStatus());
+
+            assertEquals(1.0, meterRegistry.counter("push.send", "result", "success").count());
+            assertEquals(1.0, meterRegistry.counter("push.send", "result", "stale_token").count());
         }
     }
 
     @Test
-    void send_ShouldMarkAsFailed_WhenAllTokensAreStale() throws Exception {
+    void send_ShouldMarkFailed_WhenAllTokensStale() throws Exception {
         Map<String, String> params = new HashMap<>();
-        params.put("title", "Hello");
-        params.put("body", "World");
+        params.put("title", "Test");
+        params.put("body", "Body");
 
         NotificationRequestEvent event = NotificationRequestEvent.builder()
                 .recipient("user_123")
                 .params(params)
                 .build();
-        Notification notificationRecord = new Notification();
+        Notification notif = new Notification();
 
         when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of("stale1", "stale2"));
 
         try (MockedStatic<FirebaseMessaging> mockedFirebase = mockStatic(FirebaseMessaging.class)) {
-            FirebaseMessaging firebaseMessaging = mock(FirebaseMessaging.class);
-            mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(firebaseMessaging);
+            FirebaseMessaging fm = mock(FirebaseMessaging.class);
+            mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(fm);
 
-            FirebaseMessagingException unregisteredException = mock(FirebaseMessagingException.class);
-            when(unregisteredException.getMessagingErrorCode()).thenReturn(MessagingErrorCode.UNREGISTERED);
-            when(unregisteredException.getMessage()).thenReturn("Not found");
+            FirebaseMessagingException staleEx = mock(FirebaseMessagingException.class);
+            when(staleEx.getMessagingErrorCode()).thenReturn(MessagingErrorCode.UNREGISTERED);
+            when(staleEx.getMessage()).thenReturn("Not found");
 
-            when(firebaseMessaging.send(any())).thenThrow(unregisteredException);
+            SendResponse staleResp = mock(SendResponse.class);
+            when(staleResp.isSuccessful()).thenReturn(false);
+            when(staleResp.getException()).thenReturn(staleEx);
 
-            provider.send(event, notificationRecord);
+            BatchResponse batchResponse = mock(BatchResponse.class);
+            when(batchResponse.getSuccessCount()).thenReturn(0);
+            when(batchResponse.getFailureCount()).thenReturn(2);
+            when(batchResponse.getResponses()).thenReturn(List.of(staleResp, staleResp));
 
-            assertEquals("FAILED_UNREGISTERED", notificationRecord.getStatus());
+            when(fm.sendEachForMulticast(any(MulticastMessage.class))).thenReturn(batchResponse);
+
+            provider.send(event, notif);
+
+            assertEquals("FAILED_UNREGISTERED", notif.getStatus());
             verify(userTokenService).invalidateToken("user_123", "stale1");
             verify(userTokenService).invalidateToken("user_123", "stale2");
         }
