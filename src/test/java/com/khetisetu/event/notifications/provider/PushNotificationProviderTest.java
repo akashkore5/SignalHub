@@ -1,6 +1,8 @@
 package com.khetisetu.event.notifications.provider;
 
 import com.google.firebase.messaging.FirebaseMessaging;
+import com.google.firebase.messaging.FirebaseMessagingException;
+import com.google.firebase.messaging.MessagingErrorCode;
 import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
 import com.khetisetu.event.notifications.model.Notification;
 import com.khetisetu.event.notifications.service.UserTokenService;
@@ -12,9 +14,10 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -31,34 +34,24 @@ class PushNotificationProviderTest {
     }
 
     @Test
-    void send_ShouldMarkAsSkipped_WhenTokenIsMissing() {
-        // Arrange
+    void send_ShouldMarkAsSkipped_WhenNoTokensFound() {
         NotificationRequestEvent event = NotificationRequestEvent.builder()
                 .recipient("user_123")
                 .params(new HashMap<>())
                 .build();
         Notification notificationRecord = new Notification();
 
-        when(userTokenService.getFcmToken("user_123")).thenReturn(null);
+        when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of());
 
-        // Act
         provider.send(event, notificationRecord);
 
-        // Assert
         assertEquals("SKIPPED", notificationRecord.getStatus());
         assertEquals("No FCM token found", notificationRecord.getErrorMessage());
-
-        // Verify userTokenService WAS called
-        verify(userTokenService).getFcmToken("user_123");
-
-        // Ensure Firebase was not called (would be caught by mockStatic if we had it
-        // active,
-        // but here we just want to ensure we returned early)
+        verify(userTokenService).getFcmTokens("user_123");
     }
 
     @Test
-    void send_ShouldCallFirebase_WhenTokenIsPresent() throws Exception {
-        // Arrange
+    void send_ShouldSendToAllDevices_WhenMultipleTokensPresent() throws Exception {
         Map<String, String> params = new HashMap<>();
         params.put("title", "Hello");
         params.put("body", "World");
@@ -69,19 +62,86 @@ class PushNotificationProviderTest {
                 .build();
         Notification notificationRecord = new Notification();
 
-        when(userTokenService.getFcmToken("user_123")).thenReturn("fake_token");
+        when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of("token_laptop", "token_mobile"));
 
-        // We use MockedStatic for FirebaseMessaging
         try (MockedStatic<FirebaseMessaging> mockedFirebase = mockStatic(FirebaseMessaging.class)) {
             FirebaseMessaging firebaseMessaging = mock(FirebaseMessaging.class);
             mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(firebaseMessaging);
             when(firebaseMessaging.send(any())).thenReturn("msg_id");
 
-            // Act
             provider.send(event, notificationRecord);
 
-            // Assert
-            verify(firebaseMessaging, times(1)).send(any());
+            // Both tokens should have been sent to
+            verify(firebaseMessaging, times(2)).send(any());
+        }
+    }
+
+    @Test
+    void send_ShouldInvalidateStaleToken_AndSucceedForOtherDevices() throws Exception {
+        Map<String, String> params = new HashMap<>();
+        params.put("title", "Hello");
+        params.put("body", "World");
+
+        NotificationRequestEvent event = NotificationRequestEvent.builder()
+                .recipient("user_123")
+                .params(params)
+                .build();
+        Notification notificationRecord = new Notification();
+
+        when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of("stale_token", "good_token"));
+
+        try (MockedStatic<FirebaseMessaging> mockedFirebase = mockStatic(FirebaseMessaging.class)) {
+            FirebaseMessaging firebaseMessaging = mock(FirebaseMessaging.class);
+            mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(firebaseMessaging);
+
+            // First token is stale, second succeeds
+            FirebaseMessagingException unregisteredException = mock(FirebaseMessagingException.class);
+            when(unregisteredException.getMessagingErrorCode()).thenReturn(MessagingErrorCode.UNREGISTERED);
+            when(unregisteredException.getMessage()).thenReturn("Requested entity was not found.");
+
+            when(firebaseMessaging.send(any()))
+                    .thenThrow(unregisteredException) // First call: stale
+                    .thenReturn("msg_id"); // Second call: success
+
+            // Should NOT throw — one device succeeded
+            provider.send(event, notificationRecord);
+
+            // Stale token should have been invalidated
+            verify(userTokenService).invalidateToken("user_123", "stale_token");
+            // Status should NOT be FAILED since one succeeded
+            assertNotEquals("FAILED_UNREGISTERED", notificationRecord.getStatus());
+        }
+    }
+
+    @Test
+    void send_ShouldMarkAsFailed_WhenAllTokensAreStale() throws Exception {
+        Map<String, String> params = new HashMap<>();
+        params.put("title", "Hello");
+        params.put("body", "World");
+
+        NotificationRequestEvent event = NotificationRequestEvent.builder()
+                .recipient("user_123")
+                .params(params)
+                .build();
+        Notification notificationRecord = new Notification();
+
+        when(userTokenService.getFcmTokens("user_123")).thenReturn(List.of("stale1", "stale2"));
+
+        try (MockedStatic<FirebaseMessaging> mockedFirebase = mockStatic(FirebaseMessaging.class)) {
+            FirebaseMessaging firebaseMessaging = mock(FirebaseMessaging.class);
+            mockedFirebase.when(FirebaseMessaging::getInstance).thenReturn(firebaseMessaging);
+
+            FirebaseMessagingException unregisteredException = mock(FirebaseMessagingException.class);
+            when(unregisteredException.getMessagingErrorCode()).thenReturn(MessagingErrorCode.UNREGISTERED);
+            when(unregisteredException.getMessage()).thenReturn("Not found");
+
+            when(firebaseMessaging.send(any())).thenThrow(unregisteredException);
+
+            provider.send(event, notificationRecord);
+
+            assertEquals("FAILED_UNREGISTERED", notificationRecord.getStatus());
+            verify(userTokenService).invalidateToken("user_123", "stale1");
+            verify(userTokenService).invalidateToken("user_123", "stale2");
         }
     }
 }
