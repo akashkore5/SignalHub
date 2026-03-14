@@ -1,11 +1,12 @@
 package com.khetisetu.event.agnexus.tools;
 
+import java.util.Map;
+
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.beans.factory.annotation.Value;
+
 import lombok.extern.slf4j.Slf4j;
-import java.util.Map;
-import java.util.HashMap;
 
 @Component
 @Slf4j

@@ -75,6 +75,10 @@ public class PushNotificationProvider implements NotificationProvider {
         String title = event.params().getOrDefault("title", "Notification");
         String body = event.params().getOrDefault("body", "");
 
+        // Store in notification record
+        notificationRecord.setSubject(title);
+        notificationRecord.setContent(body);
+
         // Build rich notification with optional image and icon
         Notification.Builder notifBuilder = Notification.builder()
                 .setTitle(title)

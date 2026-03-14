@@ -1,36 +1,32 @@
 package com.khetisetu.event.notifications.integration;
 
-import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
-import com.khetisetu.event.notifications.model.Notification;
-import com.khetisetu.event.notifications.provider.NotificationProvider;
-import com.khetisetu.event.notifications.repository.NotificationRepository;
+import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.MockBeans;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.core.ProducerFactory;
-import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-import java.util.Map;
-import java.time.Duration;
-import java.util.HashMap;
-import java.util.List;
-import java.util.UUID;
-
-import static org.awaitility.Awaitility.await;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
+import com.khetisetu.event.notifications.model.Notification;
+import com.khetisetu.event.notifications.provider.NotificationProvider;
+import com.khetisetu.event.notifications.repository.NotificationRepository;
 
 @SpringBootTest
 @EmbeddedKafka(partitions = 1, topics = { "notification-requests" })

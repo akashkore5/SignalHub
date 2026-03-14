@@ -1,12 +1,11 @@
 // src/main/java/com/khetisetu/event/notifications/model/Notification.java
 package com.khetisetu.event.notifications.model;
 
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+import java.util.Map;
 
 import org.springframework.data.mongodb.core.mapping.Document;
 
-import java.util.Map;
+import lombok.Data;
 
 @Data
 @Document(collection = "notifications")

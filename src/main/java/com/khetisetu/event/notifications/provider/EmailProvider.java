@@ -109,6 +109,10 @@ public class EmailProvider implements NotificationProvider {
         // 3. Resolve Subject with Placeholders
         String subject = getResolvedSubject(event);
 
+        // 3.1 Store in notification record for future retrieval
+        notification.setSubject(subject);
+        notification.setContent(htmlContent);
+
         // 4. Send via Provider (Strategy)
         try {
             activeSender.sendEmail(
