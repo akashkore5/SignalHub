@@ -15,8 +15,11 @@ public class Constants {
     public static final String OTP_SENT_EMAIL = "Otp sent to email: ";
     public static final String OTP_EMAIL = "otp_email";
     public static final String RATE_LIMIT_OTP = "ratelimit:otp:";
+
+    // Common attribute keys
     public static final String STATUS = "status";
     public static final String USER_ID = "userId";
+    public static final String EVENT_ID = "eventId";
     public static final String WORKER = "WORKER";
     public static final String OWNER_ID = "ownerId";
     public static final String ADMIN = "ADMIN";
@@ -24,6 +27,9 @@ public class Constants {
     public static final String START_DATE = "startDate";
     public static final String END_DATE = "endDate";
     public static final String RESOURCE_TYPE = "type";
+    public static final String ACTION = "action";
+
+
     public static final double EARTH_RADIUS_KM = 6371.0; // Earth radius for distance calculation
     public static final double KM_TO_METER = 1000.0; // Earth radius for distance calculation
     public static final String MPIN_REGEX = "^[0-9]{4,6}$"; // 4 to 6 digits

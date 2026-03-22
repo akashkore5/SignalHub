@@ -1,5 +1,6 @@
 package com.khetisetu.event.notifications.service;
 
+import com.khetisetu.event.logs.service.LogService;
 import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
 import com.khetisetu.event.notifications.model.Notification;
 import com.khetisetu.event.notifications.provider.NotificationProvider;
@@ -43,6 +44,9 @@ class NotificationProcessingServiceTest {
     @Mock
     private NotificationProvider emailProvider;
 
+    @Mock
+    LogService logService;
+
     private NotificationProcessingService service;
 
     @BeforeEach
@@ -51,12 +55,15 @@ class NotificationProcessingServiceTest {
         providers.put("PUSH", pushProvider);
         providers.put("EMAIL", emailProvider);
 
+        doNothing().when(logService).storeLog(any(), anyString(), any(), anyString(), anyString());
+
         service = new NotificationProcessingService(
                 notificationRepository,
                 providers,
                 kafkaTemplate,
                 redisTemplate,
                 meterRegistry);
+        service.logService = logService; // Inject mock log service
 
         lenient().when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         lenient().when(meterRegistry.counter(anyString(), any(String[].class))).thenReturn(counter);

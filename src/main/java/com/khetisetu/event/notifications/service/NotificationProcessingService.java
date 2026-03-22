@@ -1,16 +1,20 @@
 package com.khetisetu.event.notifications.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+
+import com.khetisetu.event.logs.service.LogService;
 import com.khetisetu.event.notifications.dto.NotificationAnalyticsEvent;
 import com.khetisetu.event.notifications.dto.NotificationEvent;
 import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
 import com.khetisetu.event.notifications.model.Notification;
+import com.khetisetu.event.notifications.model.logs.Actor;
+import com.khetisetu.event.notifications.model.logs.Entity;
 import com.khetisetu.event.notifications.provider.NotificationProvider;
 import com.khetisetu.event.notifications.repository.NotificationRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.retry.annotation.Backoff;
@@ -19,9 +23,13 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+
+import static com.khetisetu.event.constants.EntityConstants.*;
+import static com.khetisetu.event.constants.LogLevel.*;
 
 @Service
 @RequiredArgsConstructor
@@ -34,6 +42,9 @@ public class NotificationProcessingService {
     private final RedisTemplate<String, String> redisTemplate;
     private final MeterRegistry meterRegistry;
 
+    @Autowired
+    LogService logService;
+
     private static final String IDEMPOTENCY_KEY = "idempotency:notif:%s";
 
     // === PROCESS DIRECT EVENT ===
@@ -41,10 +52,9 @@ public class NotificationProcessingService {
     @Retryable(maxAttempts = 4, backoff = @Backoff(delay = 1000, multiplier = 2))
     public void process(NotificationEvent event) throws Exception {
         String eventId = UUID.randomUUID().toString();
-        String userId = extractUserId(event);
-        String traceId = eventId;
+        String userId = event.recipient();
 
-        MDC.put("traceId", traceId);
+        MDC.put("traceId", eventId);
         MDC.put("eventId", eventId);
         MDC.put("userId", userId);
         MDC.put("type", event.type());
@@ -97,7 +107,7 @@ public class NotificationProcessingService {
             try {
                 sendToProvider(event, "PUSH");
             } catch (Exception e) {
-                log.error("Failed to send PUSH for event {}: {}", event.eventId(), e.getMessage());
+                log.error("Failed to send PUSH for event {}: {} {}", event.eventId(), e.getMessage(), Arrays.toString(e.getStackTrace()));
                 lastException = e;
             }
         }
@@ -107,7 +117,7 @@ public class NotificationProcessingService {
             try {
                 sendToProvider(event, "EMAIL");
             } catch (Exception e) {
-                log.error("Failed to send EMAIL for event {}: {}", event.eventId(), e.getMessage());
+                log.error("Failed to send EMAIL for event {}: {} , {}", event.eventId(), e.getMessage(), Arrays.toString(e.getStackTrace()));
                 lastException = e;
             }
         }
@@ -146,13 +156,20 @@ public class NotificationProcessingService {
             updateStatus(notification, "SENT", null);
             publishAnalytics(event, "SENT", null);
             meterRegistry.counter("notification.sent", "type", type).increment();
+            Actor actor = new Actor(event.userId(), USER);
+            Entity entity = new Entity(event.eventId(), "NOTIFICATION_EVENT");
+            logService.storeLog(actor, event.type() + NOTIFICATION, entity, "Successfully publish event.", INFO);
 
         } catch (Exception e) {
             log.error("Send failed processing event {} for type {}", event.eventId(), type, e);
+            Actor actor = new Actor(event.userId(), USER);
+            Entity entity = new Entity(event.eventId(), "NOTIFICATION_EVENT");
+            logService.storeLog(actor, event.type() + NOTIFICATION, entity, "Failed to publish event", ERROR);
             updateStatus(notification, "FAILED", e.getMessage());
             try {
                 publishAnalytics(event, "FAILED", e.getMessage());
             } catch (Exception analyticsEx) {
+                logService.storeLog(actor, "ANALYTICS_EVENT", entity, "Failed to publish Analytic event", ERROR);
                 log.error("Failed to publish failure analytics for event {}", event.eventId(), analyticsEx);
             }
             meterRegistry.counter("notification.failed", "type", type).increment();
@@ -175,19 +192,9 @@ public class NotificationProcessingService {
                 .build();
     }
 
-    private String extractUserId(NotificationEvent event) {
-        return switch (event.type()) {
-            case "PUSH" -> event.recipient();
-            case "EMAIL" -> event.recipient();
-            // case "EMAIL" ->
-            // userRepository.findByEmail(event.recipient()).map(User::getId).orElse("unknown");
-            default -> "unknown";
-        };
-    }
-
     private boolean isAlreadyProcessed(String eventId) {
         try {
-            return Boolean.TRUE.equals(redisTemplate.hasKey(String.format(IDEMPOTENCY_KEY, eventId)));
+            return redisTemplate.hasKey(String.format(IDEMPOTENCY_KEY, eventId));
         } catch (Exception e) {
             log.warn("Redis unavailable for idempotency check (eventId={}). Proceeding anyway.", eventId);
             return false; // Allow processing when Redis is down
@@ -198,6 +205,9 @@ public class NotificationProcessingService {
         try {
             redisTemplate.opsForValue().set(String.format(IDEMPOTENCY_KEY, eventId), "1", 24, TimeUnit.HOURS);
         } catch (Exception e) {
+            Actor actor = new Actor("", "SYSTEM");
+            Entity entity = new Entity(eventId, "REDIS_IDEMPOTENCY");
+            logService.storeLog(actor, "REDIS_UPDATE", entity, "Failed to update redis cache so skipping", ERROR);
             log.warn("Redis unavailable for marking processed (eventId={}). Skipping.", eventId);
         }
     }
