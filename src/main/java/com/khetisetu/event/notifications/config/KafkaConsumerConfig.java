@@ -129,6 +129,8 @@ public class KafkaConsumerConfig {
             props.put("sasl.mechanism", "PLAIN");
             props.put("sasl.jaas.config", saslJaasConfig);
         }
+
+        props.put(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG, true);
         return props;
     }
 }
