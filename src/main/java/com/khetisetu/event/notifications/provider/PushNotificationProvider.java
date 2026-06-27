@@ -2,6 +2,7 @@ package com.khetisetu.event.notifications.provider;
 
 import com.google.firebase.messaging.*;
 import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
+import com.khetisetu.event.notifications.service.NotificationTemplateService;
 import com.khetisetu.event.notifications.service.UserTokenService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -16,6 +17,7 @@ import java.util.Set;
 public class PushNotificationProvider implements NotificationProvider {
 
     private final UserTokenService userTokenService;
+    private final com.khetisetu.event.notifications.service.NotificationTemplateService templateService;
     private final Counter successCounter;
     private final Counter staleCounter;
     private final Counter transientFailCounter;
@@ -29,8 +31,11 @@ public class PushNotificationProvider implements NotificationProvider {
             MessagingErrorCode.INVALID_ARGUMENT,
             MessagingErrorCode.SENDER_ID_MISMATCH);
 
-    public PushNotificationProvider(UserTokenService userTokenService, MeterRegistry meterRegistry) {
+    public PushNotificationProvider(UserTokenService userTokenService,
+            com.khetisetu.event.notifications.service.NotificationTemplateService templateService,
+            MeterRegistry meterRegistry) {
         this.userTokenService = userTokenService;
+        this.templateService = templateService;
         this.successCounter = Counter.builder("push.send")
                 .tag("result", "success")
                 .description("FCM messages sent successfully")
@@ -72,8 +77,27 @@ public class PushNotificationProvider implements NotificationProvider {
             return;
         }
 
-        String title = event.params().getOrDefault("title", "Notification");
-        String body = event.params().getOrDefault("body", "");
+        // Prefer explicit title/body in params (direct/custom pushes). Otherwise
+        // render the named template (e.g. "new_job") so trigger-based pushes carry
+        // proper, localized text instead of a generic "Notification".
+        String title = event.params().get("title");
+        String body = event.params().get("body");
+        if (title == null || title.isBlank() || body == null || body.isBlank()) {
+            NotificationTemplateService.Content resolved = templateService.resolve(
+                    event.templateName(), event.language(), event.params());
+            if (title == null || title.isBlank()) {
+                title = resolved.title();
+            }
+            if (body == null || body.isBlank()) {
+                body = resolved.body();
+            }
+        }
+        if (title == null || title.isBlank()) {
+            title = "Notification";
+        }
+        if (body == null) {
+            body = "";
+        }
 
         // Store in notification record
         notificationRecord.setSubject(title);

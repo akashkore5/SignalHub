@@ -80,28 +80,32 @@ public class UserTokenService {
             return null;
         Map<String, Object> subMap = (Map<String, Object>) sub;
 
-        // Check for 'token' key (set by newer frontend versions)
-        if (subMap.containsKey("token")) {
-            return (String) subMap.get("token");
+        // The ONLY valid FCM registration token comes from the Firebase JS SDK's
+        // getToken() call on the client, stored in the `token` field.
+        Object tokenVal = subMap.get("token");
+        if (tokenVal instanceof String token && !token.isBlank()) {
+            return token;
         }
 
-        // Fallback: extract from endpoint URL
+        // Legacy: some old clients stored the FCM token under keys.fcm.
+        Object keys = subMap.get("keys");
+        if (keys instanceof Map<?, ?> keysMap) {
+            Object fcm = keysMap.get("fcm");
+            if (fcm instanceof String fcmToken && !fcmToken.isBlank()) {
+                return fcmToken;
+            }
+        }
+
+        // IMPORTANT: We intentionally do NOT derive a token from the Web Push
+        // `endpoint` (https://fcm.googleapis.com/fcm/send/<id>). The <id> is a Web
+        // Push registration id, NOT an FCM registration token. Passing it to
+        // FirebaseMessaging.sendEachForMulticast() returns INVALID_ARGUMENT, which
+        // this service then (wrongly) treats as a stale token and deletes — so the
+        // device silently never receives anything. If only an endpoint is present,
+        // the client must re-register a real FCM token via getToken().
         if (subMap.containsKey("endpoint")) {
-            String endpoint = (String) subMap.get("endpoint");
-            if (endpoint != null && endpoint.contains("fcm.googleapis.com/fcm/send/")) {
-                return endpoint.substring(endpoint.lastIndexOf("/") + 1);
-            }
-        }
-
-        // Fallback: keys.fcm
-        if (subMap.containsKey("keys")) {
-            Object keys = subMap.get("keys");
-            if (keys instanceof Map) {
-                Map<String, Object> keysMap = (Map<String, Object>) keys;
-                if (keysMap.containsKey("fcm")) {
-                    return (String) keysMap.get("fcm");
-                }
-            }
+            log.warn("[FCM DEBUG] Subscription has a Web Push endpoint but no FCM token — skipping. "
+                    + "Client must re-register via Firebase getToken().");
         }
 
         return null;
@@ -129,9 +133,8 @@ public class UserTokenService {
                     "users");
             totalRemoved += result1.getModifiedCount();
 
-            // Strategy 2: pull from pushSubscriptions[] where endpoint URL contains the
-            // token
-            String endpointSuffix = "fcm.googleapis.com/fcm/send/" + staleToken;
+            // Strategy 2: pull from pushSubscriptions[] where endpoint URL ends with the
+            // token (legacy data only — current clients store the token directly)
             var result2 = mongoTemplate.updateFirst(userQuery,
                     new Update().pull("pushSubscriptions",
                             new org.bson.Document("endpoint",
