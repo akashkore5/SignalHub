@@ -30,7 +30,11 @@ public class AgentEventService {
     private final ConversationMemoryService memoryService;
     private final org.springframework.kafka.core.KafkaTemplate<String, Object> kafkaTemplate;
 
-    @KafkaListener(topics = "agnexus-queries", groupId = "agnexus-group")
+    // Disabled by default: the async agnexus Kafka path (agnexus-queries/-responses)
+    // is unused and the Aiven plan has no topic budget for it. Agent chat runs via
+    // AgentController (REST). Set agnexus.kafka.enabled=true after upgrading the plan.
+    @KafkaListener(topics = "agnexus-queries", groupId = "agnexus-group", containerFactory = "agnexusFactory",
+            autoStartup = "${agnexus.kafka.enabled:false}")
     public void handleAgentQuery(String message) {
         log.info("Received agent query via Kafka: {}", message);
         try {

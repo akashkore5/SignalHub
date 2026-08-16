@@ -34,6 +34,15 @@ public class KafkaConsumerConfig {
     @Value("${kafka.sasl-jaas-config:}")
     private String saslJaasConfig;
 
+    @Value("${kafka.sasl-mechanism:SCRAM-SHA-256}")
+    private String saslMechanism;
+
+    private final com.khetisetu.event.config.KafkaSslConfig kafkaSslConfig;
+
+    public KafkaConsumerConfig(com.khetisetu.event.config.KafkaSslConfig kafkaSslConfig) {
+        this.kafkaSslConfig = kafkaSslConfig;
+    }
+
     // DIRECT: NotificationEvent
     @Bean
     public ConsumerFactory<String, NotificationEvent> directConsumerFactory() {
@@ -124,6 +133,24 @@ public class KafkaConsumerConfig {
         return factory;
     }
 
+    // AGNEXUS: raw String messages from agnexus-queries
+    @Bean
+    public ConsumerFactory<String, String> agnexusConsumerFactory() {
+        Map<String, Object> props = baseProps("agnexus-group");
+        return new DefaultKafkaConsumerFactory<>(
+                props,
+                new StringDeserializer(),
+                new StringDeserializer()
+        );
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, String> agnexusFactory() {
+        var factory = new ConcurrentKafkaListenerContainerFactory<String, String>();
+        factory.setConsumerFactory(agnexusConsumerFactory());
+        return factory;
+    }
+
     private Map<String, Object> baseProps(String groupId) {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
@@ -136,8 +163,14 @@ public class KafkaConsumerConfig {
 
         if (!saslJaasConfig.isEmpty()) {
             props.put("security.protocol", "SASL_SSL");
-            props.put("sasl.mechanism", "PLAIN");
+            props.put("sasl.mechanism", saslMechanism);
             props.put("sasl.jaas.config", saslJaasConfig);
+            // Aiven uses its own project CA - must be trusted (inline PEM)
+            String sslCa = kafkaSslConfig.resolveCa();
+            if (!sslCa.isEmpty()) {
+                props.put("ssl.truststore.type", "PEM");
+                props.put("ssl.truststore.certificates", sslCa);
+            }
         }
 
         props.put(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG, true);
