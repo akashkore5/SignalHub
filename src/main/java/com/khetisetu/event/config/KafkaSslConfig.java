@@ -10,6 +10,7 @@ import org.springframework.core.io.ClassPathResource;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -34,6 +35,42 @@ public class KafkaSslConfig {
     @Value("${kafka.ssl-ca:}")
     private String sslCaProperty;
 
+    @Value("${kafka.username:}")
+    private String username;
+
+    @Value("${kafka.password:}")
+    private String password;
+
+    @Value("${kafka.sasl-mechanism:SCRAM-SHA-256}")
+    private String saslMechanism;
+
+    /**
+     * Full SASL_SSL security config for an Aiven client, built from
+     * kafka.username/kafka.password (env KAFKA_USERNAME/KAFKA_PASSWORD) so it works
+     * even when application.properties is absent (e.g. on Render, where config is
+     * env-only). Returns an empty map only when no credentials are present (local
+     * no-auth broker) — this avoids silently falling back to PLAINTEXT against a TLS
+     * port, which manifests as an OutOfMemoryError. Prefer this over a hand-crafted
+     * KAFKA_SASL_JAAS_CONFIG env string.
+     */
+    public Map<String, Object> securityProps() {
+        if (username == null || username.isBlank() || password == null || password.isBlank()) {
+            return Map.of();
+        }
+        Map<String, Object> props = new HashMap<>();
+        props.put("security.protocol", "SASL_SSL");
+        props.put("sasl.mechanism", saslMechanism);
+        props.put("sasl.jaas.config",
+                "org.apache.kafka.common.security.scram.ScramLoginModule required "
+                        + "username=\"" + username + "\" password=\"" + password + "\";");
+        String ca = resolveCa();
+        if (!ca.isEmpty()) {
+            props.put("ssl.truststore.type", "PEM");
+            props.put("ssl.truststore.certificates", ca);
+        }
+        return props;
+    }
+
     /** Returns the CA PEM: the env/property override if set, else the bundled resource, else "". */
     public String resolveCa() {
         if (sslCaProperty != null && !sslCaProperty.isBlank()) {
@@ -50,20 +87,9 @@ public class KafkaSslConfig {
         }
     }
 
-    private Map<String, Object> truststoreConfigs() {
-        String ca = resolveCa();
-        if (ca.isEmpty()) {
-            return Map.of();
-        }
-        return Map.of(
-                "ssl.truststore.type", "PEM",
-                "ssl.truststore.certificates", ca
-        );
-    }
-
     @Bean
     public DefaultKafkaConsumerFactoryCustomizer aivenConsumerCaCustomizer() {
-        Map<String, Object> configs = truststoreConfigs();
+        Map<String, Object> configs = securityProps();
         return factory -> {
             if (!configs.isEmpty()) {
                 factory.updateConfigs(configs);
@@ -73,7 +99,7 @@ public class KafkaSslConfig {
 
     @Bean
     public DefaultKafkaProducerFactoryCustomizer aivenProducerCaCustomizer() {
-        Map<String, Object> configs = truststoreConfigs();
+        Map<String, Object> configs = securityProps();
         return factory -> {
             if (!configs.isEmpty()) {
                 factory.updateConfigs(configs);

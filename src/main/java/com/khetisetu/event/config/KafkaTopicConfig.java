@@ -44,18 +44,8 @@ public class KafkaTopicConfig {
     public KafkaAdmin kafkaAdmin() {
         Map<String, Object> configs = new HashMap<>();
         configs.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-
-        if (saslJaasConfig != null && !saslJaasConfig.isEmpty()) {
-            configs.put("security.protocol", "SASL_SSL");
-            configs.put("sasl.mechanism", saslMechanism);
-            configs.put("sasl.jaas.config", saslJaasConfig);
-            // Aiven uses its own project CA - must be trusted (inline PEM)
-            String sslCa = kafkaSslConfig.resolveCa();
-            if (!sslCa.isEmpty()) {
-                configs.put("ssl.truststore.type", "PEM");
-                configs.put("ssl.truststore.certificates", sslCa);
-            }
-        }
+        // Full SASL_SSL + SCRAM + Aiven CA from KAFKA_USERNAME/KAFKA_PASSWORD (env-only safe).
+        configs.putAll(kafkaSslConfig.securityProps());
 
         KafkaAdmin admin = new KafkaAdmin(configs);
         admin.setFatalIfBrokerNotAvailable(false);

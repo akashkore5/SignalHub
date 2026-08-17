@@ -161,17 +161,9 @@ public class KafkaConsumerConfig {
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
 
-        if (!saslJaasConfig.isEmpty()) {
-            props.put("security.protocol", "SASL_SSL");
-            props.put("sasl.mechanism", saslMechanism);
-            props.put("sasl.jaas.config", saslJaasConfig);
-            // Aiven uses its own project CA - must be trusted (inline PEM)
-            String sslCa = kafkaSslConfig.resolveCa();
-            if (!sslCa.isEmpty()) {
-                props.put("ssl.truststore.type", "PEM");
-                props.put("ssl.truststore.certificates", sslCa);
-            }
-        }
+        // Full SASL_SSL + SCRAM + Aiven CA, built from KAFKA_USERNAME/KAFKA_PASSWORD.
+        // Works even without application.properties (env-only deploys like Render).
+        props.putAll(kafkaSslConfig.securityProps());
 
         props.put(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG, true);
         return props;
