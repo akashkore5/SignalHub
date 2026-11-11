@@ -5,11 +5,7 @@ import org.springframework.boot.autoconfigure.kafka.DefaultKafkaConsumerFactoryC
 import org.springframework.boot.autoconfigure.kafka.DefaultKafkaProducerFactoryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.ClassPathResource;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -71,20 +67,15 @@ public class KafkaSslConfig {
         return props;
     }
 
-    /** Returns the CA PEM: the env/property override if set, else the bundled resource, else "". */
+    /**
+     * CA PEM to trust for the broker's TLS cert: the KAFKA_SSL_CA (kafka.ssl-ca)
+     * override if set, otherwise empty = use the JVM default truststore. Empty is
+     * correct for the self-hosted Redpanda broker (public Let's Encrypt cert); a
+     * private-CA broker is supported by setting KAFKA_SSL_CA to its PEM. We no longer
+     * bundle or force a specific CA, which previously pinned clients to Aiven's root.
+     */
     public String resolveCa() {
-        if (sslCaProperty != null && !sslCaProperty.isBlank()) {
-            return sslCaProperty;
-        }
-        ClassPathResource resource = new ClassPathResource("aiven-ca.pem");
-        if (!resource.exists()) {
-            return "";
-        }
-        try (InputStream is = resource.getInputStream()) {
-            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            throw new IllegalStateException("Failed to read Aiven CA cert (aiven-ca.pem)", e);
-        }
+        return (sslCaProperty != null && !sslCaProperty.isBlank()) ? sslCaProperty : "";
     }
 
     @Bean
