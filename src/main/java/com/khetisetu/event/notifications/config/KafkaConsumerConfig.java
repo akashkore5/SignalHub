@@ -17,8 +17,11 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.util.backoff.FixedBackOff;
+
+import org.apache.kafka.common.serialization.Deserializer;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -43,6 +46,37 @@ public class KafkaConsumerConfig {
         this.kafkaSslConfig = kafkaSslConfig;
     }
 
+    /**
+     * Wraps a value deserializer so that an undeserializable record becomes a
+     * recoverable, record-level error instead of a fatal one.
+     *
+     * Without this, deserialization happens inside the consumer's poll loop —
+     * BEFORE any CommonErrorHandler can see the record — so a single malformed
+     * message throws out of poll(), the container retries the same offset, and
+     * the partition is blocked permanently. No error handler can rescue it,
+     * because the error handler is never reached.
+     *
+     * This is not hypothetical: a plain-text smoke-test message at offset 0 of
+     * notifications/p2 blocked that partition indefinitely, silently stranding
+     * every real notification queued behind it.
+     */
+    private static <T> Deserializer<T> safeJson(Class<T> type) {
+        return new ErrorHandlingDeserializer<>(new JsonDeserializer<>(type, false));
+    }
+
+    /**
+     * Logs and skips a record that could not be processed, rather than retrying
+     * it forever. Pairs with {@link #safeJson}: that surfaces the bad record,
+     * this one lets the container move past it and commit.
+     */
+    private static DefaultErrorHandler skipAfterRetries(String what) {
+        return new DefaultErrorHandler(
+                (record, ex) -> LoggerFactory.getLogger(KafkaConsumerConfig.class)
+                        .error("Dropping unprocessable {} at {}-{}@{} after retries: {}",
+                                what, record.topic(), record.partition(), record.offset(), record.value(), ex),
+                new FixedBackOff(1000L, 3));
+    }
+
     // DIRECT: NotificationEvent
     @Bean
     public ConsumerFactory<String, NotificationEvent> directConsumerFactory() {
@@ -50,7 +84,7 @@ public class KafkaConsumerConfig {
         return new DefaultKafkaConsumerFactory<>(
                 props,
                 new StringDeserializer(),
-                new JsonDeserializer<>(NotificationEvent.class, false)
+                safeJson(NotificationEvent.class)
         );
     }
 
@@ -60,6 +94,7 @@ public class KafkaConsumerConfig {
         factory.setConsumerFactory(directConsumerFactory());
         factory.setConcurrency(3);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        factory.setCommonErrorHandler(skipAfterRetries("notification event"));
         return factory;
     }
 
@@ -70,7 +105,7 @@ public class KafkaConsumerConfig {
         return new DefaultKafkaConsumerFactory<>(
                 props,
                 new StringDeserializer(),
-                new JsonDeserializer<>(NotificationRequestEvent.class, false)
+                safeJson(NotificationRequestEvent.class)
         );
     }
 
@@ -94,7 +129,7 @@ public class KafkaConsumerConfig {
         return new DefaultKafkaConsumerFactory<>(
                 props,
                 new StringDeserializer(),
-                new JsonDeserializer<>(Object.class, false)
+                safeJson(Object.class)
         );
     }
 
@@ -103,6 +138,7 @@ public class KafkaConsumerConfig {
         var factory = new ConcurrentKafkaListenerContainerFactory<String, Object>();
         factory.setConsumerFactory(analyticsConsumerFactory());
         factory.setConcurrency(2);
+        factory.setCommonErrorHandler(skipAfterRetries("analytics event"));
         return factory;
     }
 
@@ -113,7 +149,7 @@ public class KafkaConsumerConfig {
         return new DefaultKafkaConsumerFactory<>(
                 props,
                 new StringDeserializer(),
-                new JsonDeserializer<>(LogEvent.class, false)
+                safeJson(LogEvent.class)
         );
     }
 
@@ -123,13 +159,7 @@ public class KafkaConsumerConfig {
         factory.setConsumerFactory(logConsumerFactory());
         factory.setConcurrency(2);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
-        // Retry transient persistence failures 3 times with 1s backoff, then log and
-        // skip the record so a poison message can't block the partition forever.
-        var errorHandler = new DefaultErrorHandler(
-                (record, ex) -> LoggerFactory.getLogger(KafkaConsumerConfig.class)
-                        .error("Dropping unprocessable log event after retries: {}", record.value(), ex),
-                new FixedBackOff(1000L, 3));
-        factory.setCommonErrorHandler(errorHandler);
+        factory.setCommonErrorHandler(skipAfterRetries("log event"));
         return factory;
     }
 
