@@ -213,7 +213,7 @@ public class NotificationProcessingService {
                 .templateName(event.templateName())
                 .params(event.params())
                 .language(event.language())
-                .senderConfig(event.senderConfig())
+                .tenantId(event.tenantId())
                 .triggerId(null)
                 .metadata(Map.of("source", "direct"))
                 .build();

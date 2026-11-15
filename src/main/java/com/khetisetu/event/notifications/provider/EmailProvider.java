@@ -3,9 +3,10 @@ package com.khetisetu.event.notifications.provider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.khetisetu.event.notifications.dto.NotificationRequestEvent;
-import com.khetisetu.event.notifications.model.EmailSenderConfig;
 import com.khetisetu.event.notifications.model.Notification;
+import com.khetisetu.event.notifications.model.Tenant;
 import com.khetisetu.event.notifications.service.GlobalRateLimiter;
+import com.khetisetu.event.notifications.service.TenantService;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +33,7 @@ public class EmailProvider implements NotificationProvider {
     private final TemplateEngine templateEngine;
     private final ObjectMapper objectMapper;
     private final GlobalRateLimiter globalRateLimiter;
+    private final TenantService tenantService;
 
     @Value("${email.enabled:true}")
     private boolean enabled;
@@ -93,22 +95,13 @@ public class EmailProvider implements NotificationProvider {
             throw new RuntimeException("Daily email limit exceeded");
         }
 
-        // 1. Validate sender config with safe fallback
-        EmailSenderConfig senderConfig = event.senderConfig();
-        if (senderConfig == null) {
-            log.warn("Email sender config is null for event: {}. Using default sender.", event.eventId());
-            senderConfig = new EmailSenderConfig();
-            senderConfig.setCategory("DEFAULT");
-            senderConfig.setSenderEmail("support@khetisetu.com");
-            senderConfig.setSenderName("KhetiSetu");
-        } else {
-            if (senderConfig.getSenderEmail() == null || senderConfig.getSenderEmail().isBlank()) {
-                senderConfig.setSenderEmail("support@khetisetu.com");
-            }
-            if (senderConfig.getSenderName() == null || senderConfig.getSenderName().isBlank()) {
-                senderConfig.setSenderName("KhetiSetu");
-            }
-        }
+        // 1. Resolve who this is sent on behalf of, from the tenant registry.
+        //    Deliberately NOT from event.senderConfig(): that carried SMTP
+        //    credentials in the message payload which were never used to send
+        //    anything, and hardcoding a khetisetu fallback here would mail
+        //    dyopact's users under the wrong brand. An unknown or disabled
+        //    tenant throws — a visible failure beats a wrongly-branded email.
+        Tenant tenant = tenantService.resolveForSend(event.tenantId());
 
         // 2. Render HTML template
         String htmlContent = renderEmailTemplate(
@@ -126,8 +119,8 @@ public class EmailProvider implements NotificationProvider {
         // 4. Send via Provider (Strategy)
         try {
             activeSender.sendEmail(
-                    senderConfig.getSenderEmail(),
-                    senderConfig.getSenderName(),
+                    tenant.getSenderEmail(),
+                    tenant.getSenderName(),
                     event.recipient(),
                     subject,
                     htmlContent);

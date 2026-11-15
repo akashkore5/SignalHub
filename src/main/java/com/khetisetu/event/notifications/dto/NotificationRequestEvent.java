@@ -15,6 +15,10 @@ public record NotificationRequestEvent(
                 String templateName,
                 Map<String, String> params,
                 String language,
+                String tenantId, // which product this is sent on behalf of; absent => default tenant
+
+                // IGNORED — sender identity comes from the tenant registry.
+                // Kept so older messages still deserialize.
                 EmailSenderConfig senderConfig,
                 String triggerId, // optional: for rule-based
                 Map<String, Object> metadata,
