@@ -41,6 +41,17 @@ public class KafkaSslConfig {
     private String saslMechanism;
 
     /**
+     * SASL_SSL by default, which is correct for any broker reached over the
+     * public internet. Overridable because the broker's INTERNAL listener
+     * (redpanda:9092 on the docker network) is SASL without TLS — TLS is
+     * configured only on the external listener. A service running on the same
+     * box would otherwise have to hairpin out through the public hostname just
+     * to talk to a broker sitting beside it.
+     */
+    @Value("${kafka.security-protocol:${KAFKA_SECURITY_PROTOCOL:SASL_SSL}}")
+    private String securityProtocol;
+
+    /**
      * Full SASL_SSL security config for an Aiven client, built from
      * kafka.username/kafka.password (env KAFKA_USERNAME/KAFKA_PASSWORD) so it works
      * even when application.properties is absent (e.g. on Render, where config is
@@ -54,13 +65,15 @@ public class KafkaSslConfig {
             return Map.of();
         }
         Map<String, Object> props = new HashMap<>();
-        props.put("security.protocol", "SASL_SSL");
+        props.put("security.protocol", securityProtocol);
         props.put("sasl.mechanism", saslMechanism);
         props.put("sasl.jaas.config",
                 "org.apache.kafka.common.security.scram.ScramLoginModule required "
                         + "username=\"" + username + "\" password=\"" + password + "\";");
         String ca = resolveCa();
-        if (!ca.isEmpty()) {
+        // Only meaningful on a TLS protocol; setting a truststore on
+        // SASL_PLAINTEXT is silently ignored at best and confusing at worst.
+        if (!ca.isEmpty() && securityProtocol.endsWith("_SSL")) {
             props.put("ssl.truststore.type", "PEM");
             props.put("ssl.truststore.certificates", ca);
         }
