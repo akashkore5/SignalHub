@@ -9,6 +9,7 @@ import org.springframework.data.redis.cache.RedisCacheConfiguration;
 import org.springframework.data.redis.cache.RedisCacheManager;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
@@ -74,6 +75,26 @@ public class RedisConfig {
         // pattern does not apply to them and they must not be prefixed.
         template.setHashKeySerializer(new StringRedisSerializer());
         template.setHashValueSerializer(serializer);
+        template.afterPropertiesSet();
+        return template;
+    }
+
+    /**
+     * Overrides Spring Boot's auto-configured StringRedisTemplate so it carries
+     * the same namespace prefix.
+     *
+     * <p>This is the bean that actually matters here. Every Redis caller in
+     * this service injects either StringRedisTemplate or
+     * RedisTemplate&lt;String, String&gt;, and Spring satisfies BOTH from this
+     * bean — StringRedisTemplate extends RedisTemplate&lt;String, String&gt;.
+     * The RedisTemplate&lt;String, Object&gt; bean above serves none of them, so
+     * prefixing only there changed nothing at all.
+     */
+    @Bean
+    public StringRedisTemplate stringRedisTemplate(RedisConnectionFactory connectionFactory) {
+        StringRedisTemplate template = new StringRedisTemplate();
+        template.setConnectionFactory(connectionFactory);
+        template.setKeySerializer(prefixedKeySerializer());
         template.afterPropertiesSet();
         return template;
     }
