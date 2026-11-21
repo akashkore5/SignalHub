@@ -22,6 +22,7 @@ public final class LogCategory {
     public static final String JOB = "JOB";
     public static final String PAYMENT = "PAYMENT";
     public static final String NOTIFICATION = "NOTIFICATION";
+    public static final String SUPPLIER = "SUPPLIER";
     public static final String SYSTEM = "SYSTEM";
 
     /**
@@ -39,6 +40,7 @@ public final class LogCategory {
         PREFIXES.put(BOOKING, List.of("BOOKING_"));
         PREFIXES.put(EQUIPMENT, List.of("EQUIPMENT_"));
         PREFIXES.put(JOB, List.of("JOB_"));
+        PREFIXES.put(SUPPLIER, List.of("SUPPLIER_"));
         PREFIXES.put(NOTIFICATION, List.of("PUSHNOTIFICATION", "EMAILNOTIFICATION", "SMSNOTIFICATION",
                 "NOTIFICATION_", "EMAIL_", "PUSH_", "SMS_"));
     }
@@ -71,6 +73,6 @@ public final class LogCategory {
     }
 
     public static List<String> all() {
-        return List.of(USER, PRODUCT, ORDER, BOOKING, EQUIPMENT, JOB, PAYMENT, NOTIFICATION, SYSTEM);
+        return List.of(USER, PRODUCT, ORDER, BOOKING, EQUIPMENT, JOB, PAYMENT, NOTIFICATION, SUPPLIER, SYSTEM);
     }
 }

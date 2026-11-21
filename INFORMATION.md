@@ -101,7 +101,7 @@ AI agent system for farming queries.
 ### src/main/resources/
 - pplication.properties: Configuration for Kafka, MongoDB, Redis, email, Firebase, etc.
 - prompts/: Text files for AI prompts (diagnosis_prompt.txt, market_prompt.txt, router_prompt.txt).
-- 	emplates/: Thymeleaf templates for emails in multiple languages (en/, hn/, kn/, mr/, ta/, te/).
+- 	emplates/: Thymeleaf templates for emails in multiple languages (en/, hi/, kn/, mr/, ta/, te/).
 ### src/test/java/
 - EventApplicationTests.java: Basic Spring Boot test.
 - UserTokenServiceTest.java: Tests for UserTokenService.

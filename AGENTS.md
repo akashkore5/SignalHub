@@ -82,7 +82,7 @@ Key components:
 - **RAG Enrichment**: Vector search → text search fallback → tag search fallback.
 - **Async Processing**: @Async with @Retryable (4 attempts, exponential backoff).
 - **Error Handling**: Circuit breakers (Resilience4j), logs to MongoDB, analytics to Kafka. Agent errors fallback to GeneralChatAgent.
-- **Templates**: Thymeleaf multi-language emails in src/main/resources/templates/{en,hn,kn,mr,ta,te}/.
+- **Templates**: Thymeleaf multi-language emails in src/main/resources/templates/{en,hi,kn,mr,ta,te}/.
 - **Execution Tracing**: Every agent step recorded with agent name, action, detail, and duration for debugging via admin dashboard.
 
 ## Key Files

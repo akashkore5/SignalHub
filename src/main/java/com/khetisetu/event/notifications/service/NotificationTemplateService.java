@@ -2,6 +2,7 @@ package com.khetisetu.event.notifications.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.khetisetu.event.notifications.util.LanguageCodes;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
@@ -36,7 +37,7 @@ public class NotificationTemplateService {
      * Resolves the display title/body for a template, with placeholders filled in.
      */
     public Content resolve(String templateName, String language, Map<String, String> params) {
-        String lang = (language != null && !language.isEmpty()) ? language : "en";
+        String lang = LanguageCodes.normalize(language);
         Content raw = loadRaw(templateName, lang);
         if (raw == null && !"en".equals(lang)) {
             raw = loadRaw(templateName, "en");

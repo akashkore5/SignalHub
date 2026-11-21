@@ -7,6 +7,7 @@ import com.khetisetu.event.notifications.model.Notification;
 import com.khetisetu.event.notifications.model.Tenant;
 import com.khetisetu.event.notifications.service.GlobalRateLimiter;
 import com.khetisetu.event.notifications.service.TenantService;
+import com.khetisetu.event.notifications.util.LanguageCodes;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -107,7 +108,7 @@ public class EmailProvider implements NotificationProvider {
         String htmlContent = renderEmailTemplate(
                 event.templateName(),
                 event.params(),
-                event.language() != null ? event.language() : "en");
+                LanguageCodes.normalize(event.language()));
 
         // 3. Resolve Subject with Placeholders
         String subject = getResolvedSubject(event);
@@ -185,7 +186,7 @@ public class EmailProvider implements NotificationProvider {
 
         // 2. Secondary: Load from notification_templates.json
         String templateName = event.templateName();
-        String language = (event.language() != null && !event.language().isEmpty()) ? event.language() : "en";
+        String language = LanguageCodes.normalize(event.language());
         String cacheKey = language + "_" + templateName;
 
         if (subjectsCache.containsKey(cacheKey)) {
